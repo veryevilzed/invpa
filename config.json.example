@@ -1,0 +1,9 @@
+{
+  "openai_api_key": "YOUR_OPENAI_API_KEY",
+  "my_company": {
+    "name": "My Company LLC",
+    "vat": "US123456789",
+    "country": "USA",
+    "address": "123 Main St, Anytown, USA"
+  }
+}
