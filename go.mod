@@ -1,4 +1,4 @@
-module git.axgrid.com/zed/invpa
+module github.com/veryevilzed/invpa
 
 go 1.24.1
 
