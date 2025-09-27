@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Processing Invoices</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Processing...</h1>
+        <p id="progress-counter"></p>
+        <div id="log-container">
+            <pre id="log"></pre>
+        </div>
+        <div id="result-container" style="display: none;">
+            <h2>Processing Complete!</h2>
+            <a href="" id="download-link" class="button">Download Report</a>
+        </div>
+         <div id="error-container" style="display: none;">
+            <h2>An Error Occurred</h2>
+            <p id="error-message"></p>
+            <a href="/" class="button">Try Again</a>
+        </div>
+    </div>
+
+    <script>
+        const logElement = document.getElementById('log');
+        const progressCounter = document.getElementById('progress-counter');
+        const resultContainer = document.getElementById('result-container');
+        const downloadLink = document.getElementById('download-link');
+        const errorContainer = document.getElementById('error-container');
+        const errorMessage = document.getElementById('error-message');
+        const jobId = "{{.JobId}}";
+        let lastLogCount = 0;
+
+        function updateLogs(logs) {
+            if (logs.length > lastLogCount) {
+                const newLogs = logs.slice(lastLogCount);
+                newLogs.forEach(line => {
+                    const span = document.createElement('span');
+                    if (line.startsWith('[ERROR]')) {
+                        span.className = 'error-log';
+                    }
+                    span.textContent = line;
+                    logElement.appendChild(span);
+                    logElement.appendChild(document.createTextNode('\n'));
+                });
+                lastLogCount = logs.length;
+                logElement.scrollTop = logElement.scrollHeight;
+            }
+        }
+
+        function checkStatus() {
+            fetch(`/status/${jobId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.Log) {
+                        updateLogs(data.Log);
+                    }
+
+                    if (data.TotalFiles > 0) {
+                        progressCounter.textContent = `Processed ${data.ProcessedFiles} of ${data.TotalFiles}`;
+                    }
+
+                    if (data.Status === 'Completed') {
+                        document.querySelector('h1').textContent = 'Processing Complete';
+                        resultContainer.style.display = 'block';
+                        downloadLink.href = data.DownloadURL;
+                        clearInterval(pollingInterval);
+                    } else if (data.Status === 'Error') {
+                        document.querySelector('h1').textContent = 'An Error Occurred';
+                        errorMessage.textContent = data.Error || 'An unknown error occurred.';
+                        errorContainer.style.display = 'block';
+                        clearInterval(pollingInterval);
+                    }
+                })
+                .catch(err => {
+                    console.error('Polling error:', err);
+                    const errorSpan = document.createElement('span');
+                    errorSpan.className = 'error-log';
+                    errorSpan.textContent = 'Polling error. Halting updates.';
+                    logElement.appendChild(errorSpan);
+                    clearInterval(pollingInterval);
+                });
+        }
+
+        const pollingInterval = setInterval(checkStatus, 2000);
+        checkStatus(); // Initial check
+    </script>
+</body>
+</html>

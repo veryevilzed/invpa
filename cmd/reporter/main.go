@@ -17,13 +17,6 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-// Config структура для загрузки конфигурации
-type Config struct {
-	OpenAPIKey         string               `json:"openai_api_key"`
-	MyCompany          invoice.Counterparty `json:"my_company"`
-	PopplerPathWindows string               `json:"poppler_path_windows,omitempty"`
-}
-
 // Result структура для хранения результата обработки одного файла
 type Result struct {
 	SourceFile   string
@@ -154,24 +147,17 @@ func main() {
 	fmt.Printf("- %d files with errors\n", errorCount)
 }
 
-func loadConfig(path string) (*Config, error) {
+func loadConfig(path string) (*invoice.Config, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	var config Config
+	var config invoice.Config
 	decoder := json.NewDecoder(file)
 	err = decoder.Decode(&config)
-	if err != nil {
-		return nil, err
-	}
-	// Correct the path for the new location of the reporter binary
-	if _, err := os.Stat(config.MyCompany.Address); os.IsNotExist(err) {
-		config.MyCompany.Address = ""
-	}
-	return &config, nil
+	return &config, err
 }
 
 func findInvoiceFiles(root string) ([]string, error) {

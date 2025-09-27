@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invoice Processor</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Invoice Processor</h1>
+        <p>Upload a ZIP file containing your invoices (.pdf, .png, .jpg).</p>
+        <form id="upload-form">
+            <div class="file-input-wrapper">
+                <label for="zipfile" class="file-label" id="file-label-text">Choose a file...</label>
+                <input type="file" name="zipfile" id="zipfile" accept=".zip" required>
+            </div>
+            <button type="submit">Upload and Process</button>
+        </form>
+    </div>
+    <script>
+        const form = document.getElementById('upload-form');
+        const inputFile = document.getElementById('zipfile');
+        const label = document.getElementById('file-label-text');
+
+        inputFile.addEventListener('change', function() {
+            label.textContent = this.files[0] ? this.files[0].name : 'Choose a file...';
+        });
+
+        form.addEventListener('submit', function(event) {
+            event.preventDefault();
+            const formData = new FormData(form);
+            
+            fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.job_id) {
+                    window.location.href = '/result/' + data.job_id;
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown upload error'));
+                }
+            })
+            .catch(error => {
+                console.error('Upload error:', error);
+                alert('An error occurred during upload.');
+            });
+        });
+    </script>
+</body>
+</html>

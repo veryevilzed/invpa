@@ -25,3 +25,10 @@ type Counterparty struct {
 	Email   string `json:"email,omitempty"`   // Email (необязательно)
 	Website string `json:"website,omitempty"` // Веб-сайт (необязательно)
 }
+
+// Config структура для загрузки конфигурации
+type Config struct {
+	OpenAPIKey         string       `json:"openai_api_key"`
+	MyCompany          Counterparty `json:"my_company"`
+	PopplerPathWindows string       `json:"poppler_path_windows,omitempty"`
+}

@@ -41,6 +41,12 @@ clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
 	@rm -f $(APP_NAME_CLI) $(APP_NAME_REPORTER)
+	@rm -rf temp
 	@echo "Clean complete."
 
-.PHONY: all build build-all build-windows build-mac clean
+# Run the web server
+run-web:
+	@echo "Starting web server on http://localhost:8080"
+	@go run cmd/web/main.go
+
+.PHONY: all build build-all build-windows build-mac clean run-web
