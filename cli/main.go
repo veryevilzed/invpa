@@ -3,17 +3,17 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 
-	"invpa/invoice"
+	"github.com/veryevilzed/invpa/invoice"
 )
 
 // Config определяет структуру файла конфигурации.
 type Config struct {
-	OpenAIAPIKey string               `json:"openai_api_key"`
-	MyCompany    invoice.Counterparty `json:"my_company"`
+	OpenAIAPIKey       string               `json:"openai_api_key"`
+	MyCompany          invoice.Counterparty `json:"my_company"`
+	PopplerPathWindows string               `json:"poppler_path_windows,omitempty"`
 }
 
 func main() {
@@ -31,7 +31,7 @@ func main() {
 
 	// 3. Вызов анализатора
 	fmt.Printf("Analyzing file: %s\n", filePath)
-	invoices, err := invoice.ProcessFile(filePath, config.OpenAIAPIKey, config.MyCompany)
+	invoices, err := invoice.ProcessFile(filePath, config.OpenAIAPIKey, config.PopplerPathWindows, config.MyCompany)
 	if err != nil {
 		log.Fatalf("Failed to process invoice: %v", err)
 	}
@@ -51,7 +51,7 @@ func main() {
 
 // loadConfig загружает конфигурацию из файла.
 func loadConfig(path string) (*Config, error) {
-	file, err := ioutil.ReadFile(path)
+	file, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("could not read config file: %w", err)
 	}

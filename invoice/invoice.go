@@ -13,6 +13,7 @@ type Invoice struct {
 
 // Counterparty представляет данные о контрагенте.
 type Counterparty struct {
+	ID      string `json:"id,omitempty"`      // ID из внешней системы (базы данных)
 	Name    string `json:"name"`              // Наименование компании
 	VAT     string `json:"vat"`               // VAT номер
 	Country string `json:"country"`           // Страна

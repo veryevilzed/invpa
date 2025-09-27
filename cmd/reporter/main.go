@@ -1,0 +1,265 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+
+	"github.com/veryevilzed/invpa/invoice"
+
+	"github.com/google/uuid"
+	"github.com/sashabaranov/go-openai"
+	"github.com/schollz/progressbar/v3"
+	"github.com/xuri/excelize/v2"
+)
+
+// Config структура для загрузки конфигурации
+type Config struct {
+	OpenAPIKey         string               `json:"openai_api_key"`
+	MyCompany          invoice.Counterparty `json:"my_company"`
+	PopplerPathWindows string               `json:"poppler_path_windows,omitempty"`
+}
+
+// Result структура для хранения результата обработки одного файла
+type Result struct {
+	SourceFile   string
+	Invoice      *invoice.Invoice
+	ErrorMessage string
+}
+
+// UniqueCounterparty структура для хранения уникального контрагента
+type UniqueCounterparty struct {
+	SourceFile   string // Файл, где контрагент был впервые обнаружен
+	Counterparty invoice.Counterparty
+}
+
+func main() {
+	// 1. Загрузка конфигурации
+	config, err := loadConfig("../../config.json")
+	if err != nil {
+		log.Fatalf("FATAL: Could not load config.json. Make sure it exists and is configured. Error: %v", err)
+	}
+	if config.OpenAPIKey == "" {
+		log.Fatalf("FATAL: 'openai_api_key' is not set in config.json.")
+	}
+
+	// 2. Сканирование файлов в текущей директории
+	files, err := findInvoiceFiles(".")
+	if err != nil {
+		log.Fatalf("FATAL: Error scanning for files: %v", err)
+	}
+
+	if len(files) == 0 {
+		fmt.Println("No invoice files (.pdf, .png, .jpg, .jpeg) found in the current directory.")
+		return
+	}
+
+	fmt.Printf("Found %d files to process. Starting analysis...\n", len(files))
+
+	// 3. Настройка OpenAI клиента и прогресс-бара
+	client := openai.NewClient(config.OpenAPIKey)
+	bar := progressbar.NewOptions(len(files),
+		progressbar.OptionSetDescription("Processing invoices"),
+		progressbar.OptionSetTheme(progressbar.Theme{
+			Saucer:        "=",
+			SaucerHead:    ">",
+			SaucerPadding: " ",
+			BarStart:      "[",
+			BarEnd:        "]",
+		}),
+	)
+
+	// 4. Параллельная обработка файлов
+	resultsChan := make(chan Result, len(files))
+	var wg sync.WaitGroup
+
+	for _, file := range files {
+		wg.Add(1)
+		go func(f string) {
+			defer wg.Done()
+			defer bar.Add(1)
+
+			invoices, err := invoice.ProcessFile(f, config.OpenAPIKey, config.PopplerPathWindows, config.MyCompany)
+			if err != nil {
+				resultsChan <- Result{SourceFile: f, ErrorMessage: err.Error()}
+				return
+			}
+			// Если в одном файле несколько инвойсов, берем первый (для упрощения отчета)
+			if len(invoices) > 0 {
+				resultsChan <- Result{SourceFile: f, Invoice: &invoices[0]}
+			} else {
+				resultsChan <- Result{SourceFile: f, ErrorMessage: "No invoices found in file"}
+			}
+		}(file)
+	}
+
+	wg.Wait()
+	close(resultsChan)
+	fmt.Println("\nAnalysis complete. Deduplicating counterparties and generating report...")
+
+	// 5. Сбор результатов и дедупликация контрагентов
+	var successfulResults []Result
+	var errorResults []Result
+	var uniqueCounterparties []UniqueCounterparty
+	var existingForSearch []invoice.Counterparty
+
+	for res := range resultsChan {
+		if res.ErrorMessage != "" {
+			errorResults = append(errorResults, res)
+			continue
+		}
+		successfulResults = append(successfulResults, res)
+
+		// Логика дедупликации
+		matched, err := invoice.FindCounterparty(client, existingForSearch, res.Invoice.Counterparty)
+		if err != nil {
+			log.Printf("WARN: Could not match counterparty for %s: %v", res.SourceFile, err)
+			// Все равно добавляем как нового, но с ошибкой в логе
+			newID := uuid.New().String()
+			res.Invoice.Counterparty.ID = newID
+			uniqueCounterparties = append(uniqueCounterparties, UniqueCounterparty{
+				SourceFile:   res.SourceFile,
+				Counterparty: res.Invoice.Counterparty,
+			})
+			existingForSearch = append(existingForSearch, res.Invoice.Counterparty)
+		} else if matched != nil {
+			// Нашли совпадение, используем его ID
+			res.Invoice.Counterparty = *matched
+		} else {
+			// Новый контрагент
+			newID := uuid.New().String()
+			res.Invoice.Counterparty.ID = newID
+			uniqueCounterparties = append(uniqueCounterparties, UniqueCounterparty{
+				SourceFile:   res.SourceFile,
+				Counterparty: res.Invoice.Counterparty,
+			})
+			existingForSearch = append(existingForSearch, res.Invoice.Counterparty)
+		}
+	}
+
+	// 6. Генерация Excel файла
+	err = generateExcelReport(successfulResults, uniqueCounterparties, errorResults)
+	if err != nil {
+		log.Fatalf("FATAL: Failed to generate Excel report: %v", err)
+	}
+
+	fmt.Printf("\nSuccessfully generated report '__RESULT.xlsx' with:\n")
+	fmt.Printf("- %d processed invoices\n", len(successfulResults))
+	fmt.Printf("- %d unique counterparties\n", len(uniqueCounterparties))
+	fmt.Printf("- %d errors\n", len(errorResults))
+}
+
+func loadConfig(path string) (*Config, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var config Config
+	decoder := json.NewDecoder(file)
+	err = decoder.Decode(&config)
+	if err != nil {
+		return nil, err
+	}
+	// Correct the path for the new location of the reporter binary
+	if _, err := os.Stat(config.MyCompany.Address); os.IsNotExist(err) {
+		config.MyCompany.Address = ""
+	}
+	return &config, nil
+}
+
+func findInvoiceFiles(root string) ([]string, error) {
+	var files []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			ext := strings.ToLower(filepath.Ext(path))
+			if ext == ".pdf" || ext == ".png" || ext == ".jpg" || ext == ".jpeg" {
+				// Игнорируем вложенные директории, кроме текущей
+				if filepath.Dir(path) == "." {
+					files = append(files, path)
+				}
+			}
+		}
+		return nil
+	})
+	return files, err
+}
+
+func generateExcelReport(invoices []Result, counterparties []UniqueCounterparty, errors []Result) error {
+	f := excelize.NewFile()
+	defer f.Close()
+
+	// --- Лист "Invoices" ---
+	f.NewSheet("Invoices")
+	f.DeleteSheet("Sheet1") // Удаляем лист по умолчанию
+	headers := []string{
+		"Source File", "Counterparty ID", "Counterparty Name", "Counterparty VAT", "Counterparty Country",
+		"Invoice Number", "Date", "Total Amount", "Tax Amount", "Purpose",
+	}
+	for i, h := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		f.SetCellValue("Invoices", cell, h)
+	}
+	for i, res := range invoices {
+		row := i + 2
+		cp := res.Invoice.Counterparty
+		f.SetCellValue("Invoices", fmt.Sprintf("A%d", row), res.SourceFile)
+		f.SetCellValue("Invoices", fmt.Sprintf("B%d", row), cp.ID)
+		f.SetCellValue("Invoices", fmt.Sprintf("C%d", row), cp.Name)
+		f.SetCellValue("Invoices", fmt.Sprintf("D%d", row), cp.VAT)
+		f.SetCellValue("Invoices", fmt.Sprintf("E%d", row), cp.Country)
+		f.SetCellValue("Invoices", fmt.Sprintf("F%d", row), res.Invoice.Number)
+		f.SetCellValue("Invoices", fmt.Sprintf("G%d", row), res.Invoice.Date)
+		f.SetCellValue("Invoices", fmt.Sprintf("H%d", row), res.Invoice.TotalAmount)
+		f.SetCellValue("Invoices", fmt.Sprintf("I%d", row), res.Invoice.TaxAmount)
+		f.SetCellValue("Invoices", fmt.Sprintf("J%d", row), res.Invoice.Purpose)
+	}
+
+	// --- Лист "Counterparties" ---
+	f.NewSheet("Counterparties")
+	headers = []string{"Source File", "ID", "Name", "VAT", "Country", "Address", "IBAN", "SWIFT", "Phone", "Email", "Website"}
+	for i, h := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		f.SetCellValue("Counterparties", cell, h)
+	}
+	for i, ucp := range counterparties {
+		row := i + 2
+		cp := ucp.Counterparty
+		f.SetCellValue("Counterparties", fmt.Sprintf("A%d", row), ucp.SourceFile)
+		f.SetCellValue("Counterparties", fmt.Sprintf("B%d", row), cp.ID)
+		f.SetCellValue("Counterparties", fmt.Sprintf("C%d", row), cp.Name)
+		f.SetCellValue("Counterparties", fmt.Sprintf("D%d", row), cp.VAT)
+		f.SetCellValue("Counterparties", fmt.Sprintf("E%d", row), cp.Country)
+		f.SetCellValue("Counterparties", fmt.Sprintf("F%d", row), cp.Address)
+		f.SetCellValue("Counterparties", fmt.Sprintf("G%d", row), cp.IBAN)
+		f.SetCellValue("Counterparties", fmt.Sprintf("H%d", row), cp.SWIFT)
+		f.SetCellValue("Counterparties", fmt.Sprintf("I%d", row), cp.Phone)
+		f.SetCellValue("Counterparties", fmt.Sprintf("J%d", row), cp.Email)
+		f.SetCellValue("Counterparties", fmt.Sprintf("K%d", row), cp.Website)
+	}
+
+	// --- Лист "Errors" ---
+	if len(errors) > 0 {
+		f.NewSheet("Errors")
+		headers = []string{"Source File", "Error Message"}
+		for i, h := range headers {
+			cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+			f.SetCellValue("Errors", cell, h)
+		}
+		for i, res := range errors {
+			row := i + 2
+			f.SetCellValue("Errors", fmt.Sprintf("A%d", row), res.SourceFile)
+			f.SetCellValue("Errors", fmt.Sprintf("B%d", row), res.ErrorMessage)
+		}
+	}
+
+	return f.SaveAs("__RESULT.xlsx")
+}

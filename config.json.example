@@ -1,9 +1,10 @@
 {
-  "openai_api_key": "YOUR_OPENAI_API_KEY",
+  "openai_api_key": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   "my_company": {
-    "name": "My Company LLC",
-    "vat": "US123456789",
+    "name": "My Awesome Company LLC",
+    "vat": "123456789",
     "country": "USA",
     "address": "123 Main St, Anytown, USA"
-  }
+  },
+  "poppler_path_windows": "C:/Program Files/poppler/bin"
 }

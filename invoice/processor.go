@@ -5,11 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -18,7 +18,7 @@ import (
 
 // ProcessFile анализирует файл инвойса (PDF, PNG, JPG) и извлекает данные.
 // Реализует двухэтапный анализ: сначала группировка страниц, затем детальный анализ.
-func ProcessFile(filePath, apiKey string, myCompany Counterparty) ([]Invoice, error) {
+func ProcessFile(filePath, apiKey, popplerPath string, myCompany Counterparty) ([]Invoice, error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 
 	var imageContents [][]byte
@@ -28,12 +28,12 @@ func ProcessFile(filePath, apiKey string, myCompany Counterparty) ([]Invoice, er
 	switch ext {
 	case ".pdf":
 		fmt.Println("Converting PDF to images...")
-		imageContents, err = convertPDFToImages(filePath)
+		imageContents, err = convertPDFToImages(filePath, popplerPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert PDF to images: %w", err)
 		}
 	case ".png", ".jpg", ".jpeg":
-		content, err := ioutil.ReadFile(filePath)
+		content, err := os.ReadFile(filePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read image file: %w", err)
 		}
@@ -288,24 +288,31 @@ Example JSON:
 }
 
 // convertPDFToImages использует утилиту `pdftoppm` (из пакета poppler) для конвертации PDF в изображения.
-// **Требование:** Утилита `poppler` должна быть установлена в системе.
-func convertPDFToImages(pdfPath string) ([][]byte, error) {
+// **Требование:** Утилита `poppler` должна быть установлена в системе или указана в конфиге.
+func convertPDFToImages(pdfPath, popplerBinPath string) ([][]byte, error) {
 	// 1. Создаем временную директорию для изображений
-	tempDir, err := ioutil.TempDir("", "invpa-pages-")
+	tempDir, err := os.MkdirTemp("", "invpa-pages-")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	// 2. Выполняем команду `pdftoppm`
-	cmd := exec.Command("pdftoppm", "-png", pdfPath, filepath.Join(tempDir, "page"))
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("pdftoppm command failed. Is poppler installed? Error: %w. Output: %s", err, string(output))
+	// 2. Определяем путь к pdftoppm
+	cmdName := "pdftoppm"
+	if popplerBinPath != "" && runtime.GOOS == "windows" {
+		// В Windows используем путь из конфига, если он есть
+		cmdName = filepath.Join(popplerBinPath, cmdName)
 	}
 
-	// 3. Читаем созданные файлы
-	files, err := ioutil.ReadDir(tempDir)
+	// 3. Выполняем команду `pdftoppm`
+	cmd := exec.Command(cmdName, "-png", pdfPath, filepath.Join(tempDir, "page"))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("pdftoppm command failed. Is poppler installed and in PATH, or configured in config.json? Error: %w. Output: %s", err, string(output))
+	}
+
+	// 4. Читаем созданные файлы
+	files, err := os.ReadDir(tempDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read temp dir: %w", err)
 	}
@@ -318,7 +325,7 @@ func convertPDFToImages(pdfPath string) ([][]byte, error) {
 
 	for _, file := range files {
 		if !file.IsDir() && strings.HasSuffix(file.Name(), ".png") {
-			content, err := ioutil.ReadFile(filepath.Join(tempDir, file.Name()))
+			content, err := os.ReadFile(filepath.Join(tempDir, file.Name()))
 			if err != nil {
 				return nil, fmt.Errorf("failed to read generated image %s: %w", file.Name(), err)
 			}
@@ -331,4 +338,136 @@ func convertPDFToImages(pdfPath string) ([][]byte, error) {
 	}
 
 	return imageContents, nil
+}
+
+// --- Новые функции для сопоставления контрагентов ---
+
+// FindCounterparty находит существующего контрагента, соответствующего новому,
+// используя OpenAI для "умного" сопоставления.
+// Возвращает обновленного контрагента или nil, если совпадение не найдено.
+func FindCounterparty(client *openai.Client, existingCounterparties []Counterparty, newCounterparty Counterparty) (*Counterparty, error) {
+	if len(existingCounterparties) == 0 {
+		return nil, nil
+	}
+
+	// 1. Подготовить данные в виде JSON
+	existingJSON, err := json.Marshal(existingCounterparties)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal existing counterparties: %w", err)
+	}
+	newJSON, err := json.Marshal(newCounterparty)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal new counterparty: %w", err)
+	}
+
+	// 2. Создать промпт
+	prompt := buildMatchingPrompt(string(existingJSON), string(newJSON))
+
+	// 3. Отправить запрос в OpenAI
+	resp, err := client.CreateChatCompletion(
+		context.Background(),
+		openai.ChatCompletionRequest{
+			Model: openai.GPT4o,
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: prompt,
+				},
+			},
+			ResponseFormat: &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+			},
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("matching request to OpenAI failed: %w", err)
+	}
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("OpenAI returned no choices for matching")
+	}
+
+	// 4. Распарсить ответ
+	type MatchResponse struct {
+		MatchFound bool   `json:"match_found"`
+		MatchedID  string `json:"matched_id"`
+	}
+	var match MatchResponse
+	err = json.Unmarshal([]byte(resp.Choices[0].Message.Content), &match)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal matching response: %w. Response: %s", err, resp.Choices[0].Message.Content)
+	}
+
+	// 5. Если совпадение найдено
+	if match.MatchFound {
+		for _, existing := range existingCounterparties {
+			if existing.ID == match.MatchedID {
+				// a. Нашли контрагента, дополняем его данные
+				updatedCounterparty := mergeCounterparties(existing, newCounterparty)
+				return &updatedCounterparty, nil
+			}
+		}
+		return nil, fmt.Errorf("AI found a match with ID '%s' but this ID does not exist in the provided list", match.MatchedID)
+	}
+
+	// 6. Если совпадение не найдено
+	return nil, nil
+}
+
+func buildMatchingPrompt(existingJSON, newJSON string) string {
+	return fmt.Sprintf(`
+You are a data deduplication system. Your task is to find the most likely candidate from a list of existing counterparties ('existing_list') that matches a new counterparty entry ('new_entry').
+
+**Matching Rules:**
+1.  **High-confidence identifiers:** A match in 'vat', 'iban', 'website', or 'phone' is a very strong signal that it's the same entity.
+2.  **Name field:** The 'name' field is also important, but be aware of abbreviations, missing legal forms (like LLC, Inc.), or minor variations.
+3.  **ID is key:** The 'id' field in the 'existing_list' is the unique identifier from our database.
+
+**Your Task:**
+Analyze the 'new_entry' and compare it against every item in the 'existing_list'.
+If you find a confident match, respond with the ID of that match.
+If no confident match is found, indicate that.
+
+**Input Data:**
+- existing_list: %s
+- new_entry: %s
+
+**Output Format:**
+Respond ONLY with a single, valid JSON object with the following structure:
+{
+  "match_found": true,  // boolean: true if a match was found, otherwise false
+  "matched_id": "some-uuid-123" // string: the 'id' of the matched counterparty from 'existing_list'. Omit or leave empty if no match.
+}
+`, existingJSON, newJSON)
+}
+
+// mergeCounterparties объединяет данные двух контрагентов.
+// Данные из 'newData' имеют приоритет, если поле в 'existing' пустое.
+func mergeCounterparties(existing, newData Counterparty) Counterparty {
+	merged := existing
+
+	// Мы не обновляем Name, Country, Address, так как они могут быть более точными в базе
+	// Но если в базе чего-то нет, а в новом инвойсе есть - добавляем.
+	if merged.VAT == "" && newData.VAT != "" {
+		merged.VAT = newData.VAT
+	}
+	if merged.SWIFT == "" && newData.SWIFT != "" {
+		merged.SWIFT = newData.SWIFT
+	}
+	if merged.IBAN == "" && newData.IBAN != "" {
+		merged.IBAN = newData.IBAN
+	}
+	if merged.Phone == "" && newData.Phone != "" {
+		merged.Phone = newData.Phone
+	}
+	if merged.Fax == "" && newData.Fax != "" {
+		merged.Fax = newData.Fax
+	}
+	if merged.Email == "" && newData.Email != "" {
+		merged.Email = newData.Email
+	}
+	if merged.Website == "" && newData.Website != "" {
+		merged.Website = newData.Website
+	}
+
+	return merged
 }
