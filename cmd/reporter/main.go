@@ -39,7 +39,7 @@ type UniqueCounterparty struct {
 
 func main() {
 	// 1. Загрузка конфигурации
-	config, err := loadConfig("../../config.json")
+	config, err := loadConfig("config.json")
 	if err != nil {
 		log.Fatalf("FATAL: Could not load config.json. Make sure it exists and is configured. Error: %v", err)
 	}
@@ -101,20 +101,21 @@ func main() {
 	close(resultsChan)
 	fmt.Println("\nAnalysis complete. Deduplicating counterparties and generating report...")
 
-	// 5. Сбор результатов и дедупликация контрагентов
-	var successfulResults []Result
-	var errorResults []Result
+	// 5. Сбор и обработка результатов
+	var allResults []Result
 	var uniqueCounterparties []UniqueCounterparty
 	var existingForSearch []invoice.Counterparty
+	var successfulCount, errorCount int
 
 	for res := range resultsChan {
+		allResults = append(allResults, res)
 		if res.ErrorMessage != "" {
-			errorResults = append(errorResults, res)
-			continue
+			errorCount++
+			continue // Пропускаем дедупликацию для ошибочных результатов
 		}
-		successfulResults = append(successfulResults, res)
+		successfulCount++
 
-		// Логика дедупликации
+		// Логика дедупликации только для успешных результатов
 		matched, err := invoice.FindCounterparty(client, existingForSearch, res.Invoice.Counterparty)
 		if err != nil {
 			log.Printf("WARN: Could not match counterparty for %s: %v", res.SourceFile, err)
@@ -127,7 +128,7 @@ func main() {
 			})
 			existingForSearch = append(existingForSearch, res.Invoice.Counterparty)
 		} else if matched != nil {
-			// Нашли совпадение, используем его ID
+			// Нашли совпадение, используем его ID и обновленные данные
 			res.Invoice.Counterparty = *matched
 		} else {
 			// Новый контрагент
@@ -142,15 +143,15 @@ func main() {
 	}
 
 	// 6. Генерация Excel файла
-	err = generateExcelReport(successfulResults, uniqueCounterparties, errorResults)
+	err = generateExcelReport(allResults, uniqueCounterparties)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to generate Excel report: %v", err)
 	}
 
 	fmt.Printf("\nSuccessfully generated report '__RESULT.xlsx' with:\n")
-	fmt.Printf("- %d processed invoices\n", len(successfulResults))
-	fmt.Printf("- %d unique counterparties\n", len(uniqueCounterparties))
-	fmt.Printf("- %d errors\n", len(errorResults))
+	fmt.Printf("- %d successfully processed invoices\n", successfulCount)
+	fmt.Printf("- %d unique counterparties found\n", len(uniqueCounterparties))
+	fmt.Printf("- %d files with errors\n", errorCount)
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -193,7 +194,7 @@ func findInvoiceFiles(root string) ([]string, error) {
 	return files, err
 }
 
-func generateExcelReport(invoices []Result, counterparties []UniqueCounterparty, errors []Result) error {
+func generateExcelReport(allResults []Result, counterparties []UniqueCounterparty) error {
 	f := excelize.NewFile()
 	defer f.Close()
 
@@ -201,32 +202,43 @@ func generateExcelReport(invoices []Result, counterparties []UniqueCounterparty,
 	f.NewSheet("Invoices")
 	f.DeleteSheet("Sheet1") // Удаляем лист по умолчанию
 	headers := []string{
-		"Source File", "Counterparty ID", "Counterparty Name", "Counterparty VAT", "Counterparty Country",
+		"Source File", "Status", "Counterparty ID", "Counterparty Name", "Counterparty VAT", "Counterparty Country",
 		"Invoice Number", "Date", "Total Amount", "Tax Amount", "Purpose",
 	}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		f.SetCellValue("Invoices", cell, h)
 	}
-	for i, res := range invoices {
+	for i, res := range allResults {
 		row := i + 2
-		cp := res.Invoice.Counterparty
 		f.SetCellValue("Invoices", fmt.Sprintf("A%d", row), res.SourceFile)
-		f.SetCellValue("Invoices", fmt.Sprintf("B%d", row), cp.ID)
-		f.SetCellValue("Invoices", fmt.Sprintf("C%d", row), cp.Name)
-		f.SetCellValue("Invoices", fmt.Sprintf("D%d", row), cp.VAT)
-		f.SetCellValue("Invoices", fmt.Sprintf("E%d", row), cp.Country)
-		f.SetCellValue("Invoices", fmt.Sprintf("F%d", row), res.Invoice.Number)
-		f.SetCellValue("Invoices", fmt.Sprintf("G%d", row), res.Invoice.Date)
-		f.SetCellValue("Invoices", fmt.Sprintf("H%d", row), res.Invoice.TotalAmount)
-		f.SetCellValue("Invoices", fmt.Sprintf("I%d", row), res.Invoice.TaxAmount)
-		f.SetCellValue("Invoices", fmt.Sprintf("J%d", row), res.Invoice.Purpose)
+
+		if res.ErrorMessage != "" {
+			f.SetCellValue("Invoices", fmt.Sprintf("B%d", row), res.ErrorMessage)
+			// Устанавливаем красный цвет для ячейки со статусом ошибки
+			style, _ := f.NewStyle(&excelize.Style{
+				Font: &excelize.Font{Color: "9A0511"},
+			})
+			f.SetCellStyle("Invoices", fmt.Sprintf("B%d", row), fmt.Sprintf("B%d", row), style)
+		} else {
+			f.SetCellValue("Invoices", fmt.Sprintf("B%d", row), "OK")
+			cp := res.Invoice.Counterparty
+			f.SetCellValue("Invoices", fmt.Sprintf("C%d", row), cp.ID)
+			f.SetCellValue("Invoices", fmt.Sprintf("D%d", row), cp.Name)
+			f.SetCellValue("Invoices", fmt.Sprintf("E%d", row), cp.VAT)
+			f.SetCellValue("Invoices", fmt.Sprintf("F%d", row), cp.Country)
+			f.SetCellValue("Invoices", fmt.Sprintf("G%d", row), res.Invoice.Number)
+			f.SetCellValue("Invoices", fmt.Sprintf("H%d", row), res.Invoice.Date)
+			f.SetCellValue("Invoices", fmt.Sprintf("I%d", row), res.Invoice.TotalAmount)
+			f.SetCellValue("Invoices", fmt.Sprintf("J%d", row), res.Invoice.TaxAmount)
+			f.SetCellValue("Invoices", fmt.Sprintf("K%d", row), res.Invoice.Purpose)
+		}
 	}
 
 	// --- Лист "Counterparties" ---
 	f.NewSheet("Counterparties")
-	headers = []string{"Source File", "ID", "Name", "VAT", "Country", "Address", "IBAN", "SWIFT", "Phone", "Email", "Website"}
-	for i, h := range headers {
+	cpHeaders := []string{"Source File", "ID", "Name", "VAT", "Country", "Address", "IBAN", "SWIFT", "Phone", "Email", "Website"}
+	for i, h := range cpHeaders {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		f.SetCellValue("Counterparties", cell, h)
 	}
@@ -244,21 +256,6 @@ func generateExcelReport(invoices []Result, counterparties []UniqueCounterparty,
 		f.SetCellValue("Counterparties", fmt.Sprintf("I%d", row), cp.Phone)
 		f.SetCellValue("Counterparties", fmt.Sprintf("J%d", row), cp.Email)
 		f.SetCellValue("Counterparties", fmt.Sprintf("K%d", row), cp.Website)
-	}
-
-	// --- Лист "Errors" ---
-	if len(errors) > 0 {
-		f.NewSheet("Errors")
-		headers = []string{"Source File", "Error Message"}
-		for i, h := range headers {
-			cell, _ := excelize.CoordinatesToCellName(i+1, 1)
-			f.SetCellValue("Errors", cell, h)
-		}
-		for i, res := range errors {
-			row := i + 2
-			f.SetCellValue("Errors", fmt.Sprintf("A%d", row), res.SourceFile)
-			f.SetCellValue("Errors", fmt.Sprintf("B%d", row), res.ErrorMessage)
-		}
 	}
 
 	return f.SaveAs("__RESULT.xlsx")
