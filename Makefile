@@ -8,6 +8,7 @@ CMD_PATH_CLI := ./cli
 CMD_PATH_REPORTER := ./cmd/reporter
 CMD_PATH_WEB := ./cmd/web
 BUILD_DIR := ./build
+ARGS :=
 
 # Default target
 all: build
@@ -57,7 +58,7 @@ clean:
 
 # Run the web server
 run-web:
-	@echo "Starting web server on http://localhost:8080"
-	@go run cmd/web/main.go
+	@echo "Starting web server..."
+	@go run cmd/web/main.go $(ARGS)
 
 .PHONY: all build build-all build-windows build-mac build-web clean run-web

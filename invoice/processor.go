@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -299,8 +298,9 @@ func convertPDFToImages(pdfPath, popplerBinPath string) ([][]byte, error) {
 
 	// 2. Определяем путь к pdftoppm
 	cmdName := "pdftoppm"
-	if popplerBinPath != "" && runtime.GOOS == "windows" {
-		// В Windows используем путь из конфига, если он есть
+	if popplerBinPath != "" {
+		// Если в конфиге указан путь, используем его.
+		// Это позволяет пользователю указать любое расположение poppler.
 		cmdName = filepath.Join(popplerBinPath, cmdName)
 	}
 

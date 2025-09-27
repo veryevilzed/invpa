@@ -6,5 +6,6 @@
     "country": "USA",
     "address": "123 Main St, Anytown, USA"
   },
-  "poppler_path_windows": "C:/Program Files/poppler/bin"
+  "poppler_path_windows": "C:\\path\\to\\poppler-23.11.0\\Library\\bin",
+  "poppler_path_mac": "/opt/homebrew/bin"
 }

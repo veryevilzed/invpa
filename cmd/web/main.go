@@ -2,14 +2,18 @@ package main
 
 import (
 	"archive/zip"
+	"embed"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -55,9 +59,18 @@ type UniqueCounterparty struct {
 	Counterparty invoice.Counterparty
 }
 
+//go:embed templates/*.html
+var templatesFS embed.FS
+
+//go:embed static
+var staticFS embed.FS
+
 var templates *template.Template
 
 func main() {
+	port := flag.String("port", "8080", "Port for the web server")
+	flag.Parse()
+
 	if err := os.MkdirAll("temp", os.ModePerm); err != nil {
 		log.Fatalf("Could not create temp directory: %v", err)
 	}
@@ -66,12 +79,16 @@ func main() {
 	}
 
 	var err error
-	templates, err = template.ParseGlob("cmd/web/templates/*.html")
+	templates, err = template.ParseFS(templatesFS, "templates/*.html")
 	if err != nil {
 		log.Fatalf("Error parsing templates: %v", err)
 	}
 
-	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("cmd/web/static"))))
+	staticRoot, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		log.Fatal(err)
+	}
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticRoot))))
 	http.Handle("/public/", http.StripPrefix("/public/", http.FileServer(http.Dir("public"))))
 
 	http.HandleFunc("/", handleIndex)
@@ -80,8 +97,8 @@ func main() {
 	http.HandleFunc("/status/", handleStatus)
 	http.HandleFunc("/api/results/", handleJobResultData)
 
-	fmt.Println("Starting server on :8031")
-	if err := http.ListenAndServe(":8031", nil); err != nil {
+	fmt.Printf("Starting server on :%s\n", *port)
+	if err := http.ListenAndServe(":"+*port, nil); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -99,12 +116,28 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Increase max memory for multipart form
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		jsonError(w, "Could not parse multipart form", http.StatusInternalServerError)
+		return
+	}
+
 	file, header, err := r.FormFile("zipfile")
 	if err != nil {
 		jsonError(w, "Could not get uploaded file", http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
+
+	// Get company details from form
+	myCompanyOverride := invoice.Counterparty{
+		Name:    r.FormValue("company_name"),
+		VAT:     r.FormValue("company_vat"),
+		Country: r.FormValue("company_country"),
+		Address: r.FormValue("company_address"),
+		IBAN:    r.FormValue("company_iban"),
+		SWIFT:   r.FormValue("company_swift"),
+	}
 
 	jobID := uuid.New().String()
 	jobDir := filepath.Join("temp", jobID)
@@ -130,7 +163,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	jobs[jobID] = &Job{ID: jobID, Status: "Processing", Log: []string{"File uploaded successfully."}}
 	jobsMutex.Unlock()
 
-	go processInvoices(jobID)
+	go processInvoices(jobID, myCompanyOverride)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"job_id": jobID})
@@ -214,7 +247,7 @@ func setJobError(jobID, errorMsg string) {
 	}
 }
 
-func processInvoices(jobID string) {
+func processInvoices(jobID string, myCompanyOverride invoice.Counterparty) {
 	jobDir := filepath.Join("temp", jobID)
 	defer os.RemoveAll(jobDir)
 
@@ -256,17 +289,38 @@ func processInvoices(jobID string) {
 	jobsMutex.Unlock()
 	addLog(jobID, fmt.Sprintf("Found %d files to process. Starting analysis...", len(invoiceFiles)))
 
+	// Determine which company data and API key to use
+	var myCompany invoice.Counterparty
+	var apiKey, popplerPath string
+
+	if myCompanyOverride.Name != "" {
+		addLog(jobID, "Using company data provided in the form.")
+		myCompany = myCompanyOverride
+	}
+
+	// Load config to get API key and fallback company data
 	config, err := loadConfig("config.json")
 	if err != nil {
 		setJobError(jobID, fmt.Sprintf("Could not load config.json: %v", err))
 		return
 	}
-	if config.OpenAPIKey == "" {
+	apiKey = config.OpenAPIKey
+	if runtime.GOOS == "windows" {
+		popplerPath = config.PopplerPathWindows
+	} else {
+		popplerPath = config.PopplerPathMac
+	}
+	if myCompanyOverride.Name == "" {
+		addLog(jobID, "Using company data from config.json.")
+		myCompany = config.MyCompany
+	}
+
+	if apiKey == "" {
 		setJobError(jobID, "'openai_api_key' is not set in config.json.")
 		return
 	}
 
-	client := openai.NewClient(config.OpenAPIKey)
+	client := openai.NewClient(apiKey)
 	resultsChan := make(chan Result, len(invoiceFiles))
 	var wg sync.WaitGroup
 
@@ -275,7 +329,7 @@ func processInvoices(jobID string) {
 		go func(f string) {
 			defer wg.Done()
 			addLog(jobID, fmt.Sprintf("Processing %s...", filepath.Base(f)))
-			invoices, err := invoice.ProcessFile(f, config.OpenAPIKey, config.PopplerPathWindows, config.MyCompany)
+			invoices, err := invoice.ProcessFile(f, apiKey, popplerPath, myCompany)
 			incrementProcessedCount(jobID)
 			if err != nil {
 				resultsChan <- Result{SourceFile: filepath.Base(f), ErrorMessage: err.Error()}

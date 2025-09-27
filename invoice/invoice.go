@@ -31,4 +31,5 @@ type Config struct {
 	OpenAPIKey         string       `json:"openai_api_key"`
 	MyCompany          Counterparty `json:"my_company"`
 	PopplerPathWindows string       `json:"poppler_path_windows,omitempty"`
+	PopplerPathMac     string       `json:"poppler_path_mac,omitempty"`
 }
