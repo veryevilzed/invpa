@@ -15,7 +15,16 @@
         </div>
         <div id="result-container" style="display: none;">
             <h2>Processing Complete!</h2>
-            <a href="" id="download-link" class="button">Download Report</a>
+            <div class="button-group">
+                <a href="" id="download-link" class="button">Download Report</a>
+                <a href="/" class="button">Back to Upload</a>
+            </div>
+            <div id="tables-container">
+                <h3>Parsed Invoices</h3>
+                <div id="invoices-table-container"></div>
+                <h3>Unique Counterparties</h3>
+                <div id="counterparties-table-container"></div>
+            </div>
         </div>
          <div id="error-container" style="display: none;">
             <h2>An Error Occurred</h2>
@@ -31,6 +40,9 @@
         const downloadLink = document.getElementById('download-link');
         const errorContainer = document.getElementById('error-container');
         const errorMessage = document.getElementById('error-message');
+        const tablesContainer = document.getElementById('tables-container');
+        const invoicesTableContainer = document.getElementById('invoices-table-container');
+        const counterpartiesTableContainer = document.getElementById('counterparties-table-container');
         const jobId = "{{.JobId}}";
         let lastLogCount = 0;
 
@@ -51,6 +63,112 @@
             }
         }
 
+        function fetchResults() {
+            fetch(`/api/results/${jobId}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    console.log("Received data:", data); // Debugging
+                    tablesContainer.style.display = 'block';
+                    createInvoicesTable(data.AllResults);
+                    createCounterpartiesTable(data.UniqueCounterparties);
+                })
+                .catch(err => {
+                    console.error('Error fetching results data:', err);
+                    const errorDiv = document.getElementById('tables-container');
+                    errorDiv.style.display = 'block';
+                    errorDiv.innerHTML = `<p class="error-log">Could not load result data: ${err.message}</p>`;
+                });
+        }
+
+        function createInvoicesTable(results) {
+            if (!results || results.length === 0) {
+                invoicesTableContainer.innerHTML = '<p>No invoices were successfully parsed.</p>';
+                return;
+            }
+            const table = document.createElement('table');
+            const thead = document.createElement('thead');
+            const tbody = document.createElement('tbody');
+            const headers = ['Source File', 'Status', 'Counterparty', 'Invoice #', 'Date', 'Total', 'Tax'];
+
+            let tr = document.createElement('tr');
+            headers.forEach(h => {
+                const th = document.createElement('th');
+                th.textContent = h;
+                tr.appendChild(th);
+            });
+            thead.appendChild(tr);
+
+            results.forEach(res => {
+                tr = document.createElement('tr');
+                if (res.ErrorMessage) {
+                    tr.innerHTML = `<td>${res.SourceFile}</td><td class="error-cell" colspan="6">${res.ErrorMessage}</td>`;
+                } else if (!res.Invoice) {
+                    tr.innerHTML = `<td>${res.SourceFile}</td><td class="error-cell" colspan="6">Processing completed, but no invoice data was extracted.</td>`;
+                } else {
+                    const inv = res.Invoice;
+                    tr.innerHTML = `
+                        <td>${res.SourceFile}</td>
+                        <td>OK</td>
+                        <td>${inv.counterparty?.name || 'N/A'}</td>
+                        <td>${inv.number || 'N/A'}</td>
+                        <td>${inv.date || 'N/A'}</td>
+                        <td>${inv.total_amount || 0}</td>
+                        <td>${inv.tax_amount || 0}</td>
+                    `;
+                }
+                tbody.appendChild(tr);
+            });
+
+            table.appendChild(thead);
+            table.appendChild(tbody);
+            invoicesTableContainer.appendChild(table);
+        }
+
+        function createCounterpartiesTable(counterparties) {
+            if (!counterparties || counterparties.length === 0) {
+                counterpartiesTableContainer.innerHTML = '<p>No new counterparties were identified.</p>';
+                return;
+            }
+            const table = document.createElement('table');
+            const thead = document.createElement('thead');
+            const tbody = document.createElement('tbody');
+            const headers = ['Name', 'VAT', 'Country', 'Address', 'Source File'];
+
+            let tr = document.createElement('tr');
+            headers.forEach(h => {
+                const th = document.createElement('th');
+                th.textContent = h;
+                tr.appendChild(th);
+            });
+            thead.appendChild(tr);
+
+            counterparties.forEach(ucp => {
+                tr = document.createElement('tr');
+                const cp = ucp.Counterparty;
+                if (cp) {
+                    tr.innerHTML = `
+                        <td>${cp.name || 'N/A'}</td>
+                        <td>${cp.vat || 'N/A'}</td>
+                        <td>${cp.country || 'N/A'}</td>
+                        <td>${cp.address || 'N/A'}</td>
+                        <td>${ucp.SourceFile || 'N/A'}</td>
+                    `;
+                } else {
+                     tr.innerHTML = `<td class="error-cell" colspan="5">Invalid counterparty data for ${ucp.SourceFile}</td>`;
+                }
+                tbody.appendChild(tr);
+            });
+
+            table.appendChild(thead);
+            table.appendChild(tbody);
+            counterpartiesTableContainer.appendChild(table);
+        }
+
         function checkStatus() {
             fetch(`/status/${jobId}`)
                 .then(response => response.json())
@@ -68,6 +186,7 @@
                         resultContainer.style.display = 'block';
                         downloadLink.href = data.DownloadURL;
                         clearInterval(pollingInterval);
+                        fetchResults(); // Fetch and display table data
                     } else if (data.Status === 'Error') {
                         document.querySelector('h1').textContent = 'An Error Occurred';
                         errorMessage.textContent = data.Error || 'An unknown error occurred.';

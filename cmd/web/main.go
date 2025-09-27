@@ -25,14 +25,22 @@ var jobsMutex = &sync.Mutex{}
 
 // Job holds all information about a processing task
 type Job struct {
-	ID             string
-	Status         string // "Uploading", "Processing", "Completed", "Error"
-	Log            []string
-	Error          string
-	ResultPath     string
-	DownloadURL    string
-	TotalFiles     int
-	ProcessedFiles int
+	ID                   string
+	Status               string // "Uploading", "Processing", "Completed", "Error"
+	Log                  []string
+	Error                string
+	ResultPath           string
+	DownloadURL          string
+	TotalFiles           int
+	ProcessedFiles       int
+	AllResults           []Result             `json:"-"` // Exclude from default status response
+	UniqueCounterparties []UniqueCounterparty `json:"-"` // Exclude from default status response
+}
+
+// JobResultData holds the data to be returned for the result tables
+type JobResultData struct {
+	AllResults           []Result
+	UniqueCounterparties []UniqueCounterparty
 }
 
 // Structs for processing logic
@@ -70,6 +78,7 @@ func main() {
 	http.HandleFunc("/upload", handleUpload)
 	http.HandleFunc("/result/", handleResultPage)
 	http.HandleFunc("/status/", handleStatus)
+	http.HandleFunc("/api/results/", handleJobResultData)
 
 	fmt.Println("Starting server on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
@@ -157,6 +166,26 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(job)
+}
+
+func handleJobResultData(w http.ResponseWriter, r *http.Request) {
+	jobID := strings.TrimPrefix(r.URL.Path, "/api/results/")
+	jobsMutex.Lock()
+	job, ok := jobs[jobID]
+	jobsMutex.Unlock()
+
+	if !ok || job.Status != "Completed" {
+		jsonError(w, "Job not found or not completed", http.StatusNotFound)
+		return
+	}
+
+	data := JobResultData{
+		AllResults:           job.AllResults,
+		UniqueCounterparties: job.UniqueCounterparties,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
 }
 
 func addLog(jobID, message string) {
@@ -308,6 +337,8 @@ func processInvoices(jobID string) {
 		job.Status = "Completed"
 		job.ResultPath = resultPath
 		job.DownloadURL = "/public/" + resultFileName
+		job.AllResults = allResults
+		job.UniqueCounterparties = uniqueCounterparties
 		job.Log = append(job.Log, fmt.Sprintf("Successfully generated report with %d processed invoices.", successfulCount))
 	}
 	jobsMutex.Unlock()
