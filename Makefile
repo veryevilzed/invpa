@@ -3,8 +3,10 @@
 # Variables
 APP_NAME_CLI := invpa
 APP_NAME_REPORTER := reporter
+APP_NAME_WEB := invpa-web
 CMD_PATH_CLI := ./cli
 CMD_PATH_REPORTER := ./cmd/reporter
+CMD_PATH_WEB := ./cmd/web
 BUILD_DIR := ./build
 
 # Default target
@@ -36,6 +38,15 @@ build-mac:
 	GOOS=darwin GOARCH=amd64 go build -o $(BUILD_DIR)/mac/$(APP_NAME_CLI) $(CMD_PATH_CLI)
 	@echo "macOS executables are in $(BUILD_DIR)/mac/"
 
+# Build web server for Linux (using Zig for CGO cross-compilation)
+build-web:
+	@echo "Building web server for Linux (x86_64-linux-gnu)..."
+	@mkdir -p $(BUILD_DIR)/linux
+	export CC="zig cc -target x86_64-linux-gnu"; \
+	export CXX="zig c++ -target x86_64-linux-gnu"; \
+	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/linux/$(APP_NAME_WEB) $(CMD_PATH_WEB)
+	@echo "Linux web server executable is in $(BUILD_DIR)/linux/"
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
@@ -49,4 +60,4 @@ run-web:
 	@echo "Starting web server on http://localhost:8080"
 	@go run cmd/web/main.go
 
-.PHONY: all build build-all build-windows build-mac clean run-web
+.PHONY: all build build-all build-windows build-mac build-web clean run-web
