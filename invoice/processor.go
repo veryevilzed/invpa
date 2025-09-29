@@ -255,11 +255,13 @@ You are an expert accountant. The following images are pages from a SINGLE invoi
 3.  **Extract invoice details:**
     *   "type": Use '1' for "Платежное поручение" (Invoice/Bill) or '2' for "Кассовый чек" (Receipt). This is an integer.
     *   "number": The invoice or receipt number.
-    *   "date": The invoice date in YYYY-MM-DD format.
+    *   "date": The invoice date, always formatted as **DD.MM.YYYY**.
     *   "total_amount": The final, total amount as a float.
     *   "tax_amount": The total tax amount (e.g., VAT, НДС). If not present, use 0.
+    *   "currency": The 3-letter currency code (e.g., EUR, USD, RUB). If not explicitly stated, infer it from the counterparty's country.
 4.  **Identify the Counterparty (the *other* company, not ours):**
     *   **Required fields:** "name", "vat", "country", "address".
+    *   "country_code": The 3-letter ISO 3166-1 alpha-3 country code. If the country is not obvious, infer it from clues like the IBAN (first 2 letters), phone prefix, or website TLD.
     *   **Optional fields:** If present, also extract "swift", "iban", "phone", "fax", "email", "website".
 5.  **My company's details are for context only.** Do NOT extract them. My company is:
     *   Name: %s, VAT: %s, Country: %s, Address: %s
@@ -269,14 +271,16 @@ Example JSON:
 {
   "type": 1,
   "number": "INV-12345",
-  "date": "2023-10-27",
+  "date": "27.10.2023",
   "total_amount": 1500.75,
   "tax_amount": 75.25,
+  "currency": "EUR",
   "purpose": "Лицензия на ПО",
   "counterparty": {
     "name": "ООО 'ТехноСофт'",
     "vat": "7701234567",
     "country": "Россия",
+    "country_code": "RUS",
     "address": "г. Москва, ул. Программистов, д. 1",
     "swift": "SABRRUMM",
     "iban": "RU40802810100000000001",
@@ -350,10 +354,35 @@ func FindCounterparty(client *openai.Client, existingCounterparties []Counterpar
 		return nil, nil
 	}
 
-	// 1. Подготовить данные в виде JSON
-	existingJSON, err := json.Marshal(existingCounterparties)
+	// 1. Подготовить данные для промпта. Используем индекс среза как временный ID.
+	type PromptCounterparty struct {
+		Index   int    `json:"index"`
+		Name    string `json:"name"`
+		VAT     string `json:"vat"`
+		Country string `json:"country"`
+		Address string `json:"address"`
+		IBAN    string `json:"iban,omitempty"`
+		Website string `json:"website,omitempty"`
+		Phone   string `json:"phone,omitempty"`
+	}
+
+	promptList := make([]PromptCounterparty, len(existingCounterparties))
+	for i, cp := range existingCounterparties {
+		promptList[i] = PromptCounterparty{
+			Index:   i,
+			Name:    cp.Name,
+			VAT:     cp.VAT,
+			Country: cp.Country,
+			Address: cp.Address,
+			IBAN:    cp.IBAN,
+			Website: cp.Website,
+			Phone:   cp.Phone,
+		}
+	}
+
+	existingJSON, err := json.Marshal(promptList)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal existing counterparties: %w", err)
+		return nil, fmt.Errorf("failed to marshal existing counterparties for prompt: %w", err)
 	}
 	newJSON, err := json.Marshal(newCounterparty)
 	if err != nil {
@@ -388,25 +417,34 @@ func FindCounterparty(client *openai.Client, existingCounterparties []Counterpar
 
 	// 4. Распарсить ответ
 	type MatchResponse struct {
-		MatchFound bool   `json:"match_found"`
-		MatchedID  string `json:"matched_id"`
+		MatchFound   bool `json:"match_found"`
+		MatchedIndex int  `json:"matched_index"` // Получаем индекс, а не ID
 	}
 	var match MatchResponse
 	err = json.Unmarshal([]byte(resp.Choices[0].Message.Content), &match)
 	if err != nil {
+		// Если не удалось распарсить, проверяем на старый формат ответа для обратной совместимости
+		type OldMatchResponse struct {
+			MatchFound bool   `json:"match_found"`
+			MatchedID  string `json:"matched_id"`
+		}
+		var oldMatch OldMatchResponse
+		if json.Unmarshal([]byte(resp.Choices[0].Message.Content), &oldMatch) == nil && oldMatch.MatchFound {
+			// Это старый ответ, мы не можем его обработать с uint64. Считаем, что совпадений нет.
+			return nil, nil
+		}
 		return nil, fmt.Errorf("failed to unmarshal matching response: %w. Response: %s", err, resp.Choices[0].Message.Content)
 	}
 
 	// 5. Если совпадение найдено
 	if match.MatchFound {
-		for _, existing := range existingCounterparties {
-			if existing.ID == match.MatchedID {
-				// a. Нашли контрагента, дополняем его данные
-				updatedCounterparty := mergeCounterparties(existing, newCounterparty)
-				return &updatedCounterparty, nil
-			}
+		if match.MatchedIndex >= 0 && match.MatchedIndex < len(existingCounterparties) {
+			// a. Нашли контрагента по индексу, дополняем его данные
+			existing := existingCounterparties[match.MatchedIndex]
+			updatedCounterparty := mergeCounterparties(existing, newCounterparty)
+			return &updatedCounterparty, nil
 		}
-		return nil, fmt.Errorf("AI found a match with ID '%s' but this ID does not exist in the provided list", match.MatchedID)
+		return nil, fmt.Errorf("AI found a match with index '%d' but this index is out of bounds", match.MatchedIndex)
 	}
 
 	// 6. Если совпадение не найдено
@@ -420,11 +458,11 @@ You are a data deduplication system. Your task is to find the most likely candid
 **Matching Rules:**
 1.  **High-confidence identifiers:** A match in 'vat', 'iban', 'website', or 'phone' is a very strong signal that it's the same entity.
 2.  **Name field:** The 'name' field is also important, but be aware of abbreviations, missing legal forms (like LLC, Inc.), or minor variations.
-3.  **ID is key:** The 'id' field in the 'existing_list' is the unique identifier from our database.
+3.  **Index is key:** The 'index' field in the 'existing_list' is the unique temporary identifier for this operation.
 
 **Your Task:**
 Analyze the 'new_entry' and compare it against every item in the 'existing_list'.
-If you find a confident match, respond with the ID of that match.
+If you find a confident match, respond with the **index** of that match.
 If no confident match is found, indicate that.
 
 **Input Data:**
@@ -435,7 +473,7 @@ If no confident match is found, indicate that.
 Respond ONLY with a single, valid JSON object with the following structure:
 {
   "match_found": true,  // boolean: true if a match was found, otherwise false
-  "matched_id": "some-uuid-123" // string: the 'id' of the matched counterparty from 'existing_list'. Omit or leave empty if no match.
+  "matched_index": 1    // integer: the 'index' of the matched counterparty from 'existing_list'. Use -1 if no match.
 }
 `, existingJSON, newJSON)
 }

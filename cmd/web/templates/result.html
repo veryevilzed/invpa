@@ -93,7 +93,7 @@
             const table = document.createElement('table');
             const thead = document.createElement('thead');
             const tbody = document.createElement('tbody');
-            const headers = ['Source File', 'Status', 'Counterparty', 'Invoice #', 'Date', 'Total', 'Tax'];
+            const headers = ['Source File', 'Status', 'Counterparty', 'Invoice #', 'Date', 'Total', 'Currency', 'Tax'];
 
             let tr = document.createElement('tr');
             headers.forEach(h => {
@@ -118,6 +118,7 @@
                         <td>${inv.number || 'N/A'}</td>
                         <td>${inv.date || 'N/A'}</td>
                         <td>${inv.total_amount || 0}</td>
+                        <td>${inv.currency || 'N/A'}</td>
                         <td>${inv.tax_amount || 0}</td>
                     `;
                 }
@@ -137,7 +138,7 @@
             const table = document.createElement('table');
             const thead = document.createElement('thead');
             const tbody = document.createElement('tbody');
-            const headers = ['Name', 'VAT', 'Country', 'Address', 'Source File'];
+            const headers = ['Name', 'VAT', 'Country', 'Country Code', 'Address', 'Source File'];
 
             let tr = document.createElement('tr');
             headers.forEach(h => {
@@ -155,6 +156,7 @@
                         <td>${cp.name || 'N/A'}</td>
                         <td>${cp.vat || 'N/A'}</td>
                         <td>${cp.country || 'N/A'}</td>
+                        <td>${cp.country_code || 'N/A'}</td>
                         <td>${cp.address || 'N/A'}</td>
                         <td>${ucp.SourceFile || 'N/A'}</td>
                     `;

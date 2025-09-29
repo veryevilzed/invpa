@@ -364,15 +364,13 @@ func processInvoices(jobID string, myCompanyOverride invoice.Counterparty) {
 		matched, err := invoice.FindCounterparty(client, existingForSearch, res.Invoice.Counterparty)
 		if err != nil {
 			addLog(jobID, fmt.Sprintf("WARN: Could not match counterparty for %s: %v", res.SourceFile, err))
-			newID := uuid.New().String()
-			res.Invoice.Counterparty.ID = newID
+			// ID будет 0 (zero-value), что означает "новый"
 			uniqueCounterparties = append(uniqueCounterparties, UniqueCounterparty{SourceFile: res.SourceFile, Counterparty: res.Invoice.Counterparty})
 			existingForSearch = append(existingForSearch, res.Invoice.Counterparty)
 		} else if matched != nil {
 			res.Invoice.Counterparty = *matched
 		} else {
-			newID := uuid.New().String()
-			res.Invoice.Counterparty.ID = newID
+			// ID будет 0 (zero-value), что означает "новый"
 			uniqueCounterparties = append(uniqueCounterparties, UniqueCounterparty{SourceFile: res.SourceFile, Counterparty: res.Invoice.Counterparty})
 			existingForSearch = append(existingForSearch, res.Invoice.Counterparty)
 		}
@@ -475,7 +473,7 @@ func generateExcelReport(path string, allResults []Result, counterparties []Uniq
 	defer f.Close()
 	f.NewSheet("Invoices")
 	f.DeleteSheet("Sheet1")
-	headers := []string{"Source File", "Status", "Counterparty ID", "Counterparty Name", "Counterparty VAT", "Counterparty Country", "Invoice Number", "Date", "Total Amount", "Tax Amount", "Purpose"}
+	headers := []string{"Source File", "Status", "Counterparty ID", "Counterparty Name", "Counterparty VAT", "Counterparty Country", "Invoice Number", "Date", "Total Amount", "Tax Amount", "Currency", "Purpose"}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		f.SetCellValue("Invoices", cell, h)
@@ -498,11 +496,12 @@ func generateExcelReport(path string, allResults []Result, counterparties []Uniq
 			f.SetCellValue("Invoices", fmt.Sprintf("H%d", row), res.Invoice.Date)
 			f.SetCellValue("Invoices", fmt.Sprintf("I%d", row), res.Invoice.TotalAmount)
 			f.SetCellValue("Invoices", fmt.Sprintf("J%d", row), res.Invoice.TaxAmount)
-			f.SetCellValue("Invoices", fmt.Sprintf("K%d", row), res.Invoice.Purpose)
+			f.SetCellValue("Invoices", fmt.Sprintf("K%d", row), res.Invoice.Currency)
+			f.SetCellValue("Invoices", fmt.Sprintf("L%d", row), res.Invoice.Purpose)
 		}
 	}
 	f.NewSheet("Counterparties")
-	cpHeaders := []string{"Source File", "ID", "Name", "VAT", "Country", "Address", "IBAN", "SWIFT", "Phone", "Email", "Website"}
+	cpHeaders := []string{"Source File", "ID", "Name", "VAT", "Country", "Country Code", "Address", "IBAN", "SWIFT", "Phone", "Email", "Website"}
 	for i, h := range cpHeaders {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		f.SetCellValue("Counterparties", cell, h)
@@ -515,12 +514,13 @@ func generateExcelReport(path string, allResults []Result, counterparties []Uniq
 		f.SetCellValue("Counterparties", fmt.Sprintf("C%d", row), cp.Name)
 		f.SetCellValue("Counterparties", fmt.Sprintf("D%d", row), cp.VAT)
 		f.SetCellValue("Counterparties", fmt.Sprintf("E%d", row), cp.Country)
-		f.SetCellValue("Counterparties", fmt.Sprintf("F%d", row), cp.Address)
-		f.SetCellValue("Counterparties", fmt.Sprintf("G%d", row), cp.IBAN)
-		f.SetCellValue("Counterparties", fmt.Sprintf("H%d", row), cp.SWIFT)
-		f.SetCellValue("Counterparties", fmt.Sprintf("I%d", row), cp.Phone)
-		f.SetCellValue("Counterparties", fmt.Sprintf("J%d", row), cp.Email)
-		f.SetCellValue("Counterparties", fmt.Sprintf("K%d", row), cp.Website)
+		f.SetCellValue("Counterparties", fmt.Sprintf("F%d", row), cp.CountryCode)
+		f.SetCellValue("Counterparties", fmt.Sprintf("G%d", row), cp.Address)
+		f.SetCellValue("Counterparties", fmt.Sprintf("H%d", row), cp.IBAN)
+		f.SetCellValue("Counterparties", fmt.Sprintf("I%d", row), cp.SWIFT)
+		f.SetCellValue("Counterparties", fmt.Sprintf("J%d", row), cp.Phone)
+		f.SetCellValue("Counterparties", fmt.Sprintf("K%d", row), cp.Email)
+		f.SetCellValue("Counterparties", fmt.Sprintf("L%d", row), cp.Website)
 	}
 	return f.SaveAs(path)
 }

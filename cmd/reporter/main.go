@@ -11,7 +11,6 @@ import (
 
 	"github.com/veryevilzed/invpa/invoice"
 
-	"github.com/google/uuid"
 	"github.com/sashabaranov/go-openai"
 	"github.com/schollz/progressbar/v3"
 	"github.com/xuri/excelize/v2"
@@ -112,9 +111,7 @@ func main() {
 		matched, err := invoice.FindCounterparty(client, existingForSearch, res.Invoice.Counterparty)
 		if err != nil {
 			log.Printf("WARN: Could not match counterparty for %s: %v", res.SourceFile, err)
-			// Все равно добавляем как нового, но с ошибкой в логе
-			newID := uuid.New().String()
-			res.Invoice.Counterparty.ID = newID
+			// ID будет 0 (zero-value), что означает "новый"
 			uniqueCounterparties = append(uniqueCounterparties, UniqueCounterparty{
 				SourceFile:   res.SourceFile,
 				Counterparty: res.Invoice.Counterparty,
@@ -124,9 +121,7 @@ func main() {
 			// Нашли совпадение, используем его ID и обновленные данные
 			res.Invoice.Counterparty = *matched
 		} else {
-			// Новый контрагент
-			newID := uuid.New().String()
-			res.Invoice.Counterparty.ID = newID
+			// ID будет 0 (zero-value), что означает "новый"
 			uniqueCounterparties = append(uniqueCounterparties, UniqueCounterparty{
 				SourceFile:   res.SourceFile,
 				Counterparty: res.Invoice.Counterparty,
